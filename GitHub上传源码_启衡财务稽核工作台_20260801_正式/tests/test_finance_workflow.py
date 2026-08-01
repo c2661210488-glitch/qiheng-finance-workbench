@@ -41,6 +41,10 @@ class FakeClient:
             return {"data": list(self.existing_reviews)}
         return {"data": []}
 
+    def me(self):
+        """Mirror the least-privilege capability check used before write-back."""
+        return {"scopes": ["expense:review"]}
+
     def get_claim(self, claim_id: str):
         return {"id": claim_id, "claimNo": "BX-TEST-001", "lines": [], "totalFen": 10000}
 
