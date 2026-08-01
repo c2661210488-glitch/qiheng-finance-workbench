@@ -1241,12 +1241,12 @@ class Workbench(QMainWindow):
                 same_verdict = [x for x in old if x.get("result") == item["decision"]]
                 exact = any((x.get("reasons") or []) == intended_reasons for x in same_verdict)
                 if exact:
-                    result.append((claim_id, "内容已一致", "ERP 已存在与本次完全相同的审核意见；财务仍可点击“确认批量写回”再次追加本次意见。"))
+                    result.append((claim_id, "内容已一致", "ERP 已存在与本次完全相同的审核意见。可直接写回作为本次人工确认留痕；ERP 保留历史记录，最新人工最终意见作为当前建议。"))
                 elif same_verdict:
                     latest_same = max(same_verdict, key=lambda x: str(x.get("createdAt") or x.get("reviewedAt") or x.get("actedAt") or x.get("updatedAt") or ""))
                     old_reasons = "；".join(latest_same.get("reasons") or []) or latest_same.get("comment") or "ERP 未记录原因"
                     new_reasons = "；".join(intended_reasons) or "本次未生成原因"
-                    detail = f"结论一致：ERP 与本次均为{result_label(item['decision'])}。ERP 原原因：{old_reasons}；本次原因：{new_reasons}。ERP 已有审核意见，系统不重复写回。"
+                    detail = f"结论一致：ERP 与本次均为{result_label(item['decision'])}。ERP 原原因：{old_reasons}；本次原因：{new_reasons}。可直接写回，新增本次人工确认留痕，最新人工最终意见作为当前建议。"
                     result.append((claim_id, "结论一致", detail))
                 elif not old:
                     result.append((claim_id, "可写回", "ERP 当前没有审核意见，可安全写入本次人工最终意见。"))
@@ -1256,7 +1256,7 @@ class Workbench(QMainWindow):
                     old_reasons = "；".join(latest.get("reasons") or []) or latest.get("comment") or "ERP 未记录原因"
                     new_result = result_label(item.get("decision"))
                     new_reasons = "；".join(intended_reasons) or "本次未生成原因"
-                    detail = f"ERP 原意见：{old_result}（{old_reasons}）；本次拟写：{new_result}（{new_reasons}）。新旧意见不一致，已明确标红；系统不会覆盖或追加，请到 ERP 人工处理。"
+                    detail = f"ERP 原意见：{old_result}（{old_reasons}）；本次拟写：{new_result}（{new_reasons}）。新旧意见不一致；确认写回后新增人工改判记录，ERP 保留旧记录并以最新人工最终意见作为当前建议。"
                     result.append((claim_id, "意见冲突", detail))
             return result
         def done(rows: list[tuple[str,str,str]]) -> None:
@@ -1267,10 +1267,10 @@ class Workbench(QMainWindow):
         self._run(work, done)
 
     def writeback(self) -> None:
-        # ERP already has an opinion: never append or overwrite it.  The
-        # screen may retain it for comparison, but only a genuinely blank ERP
-        # opinion is eligible for this client-side writeback.
-        eligible = {"可写回"}
+        # ERP review records are append-only.  An existing opinion is never
+        # deleted; a finance user may write a corrected final opinion and the
+        # newest manual-final record becomes the current recommendation.
+        eligible = {"可写回", "内容已一致", "结论一致", "意见冲突"}
         selected = self.selected_write_targets()
         targets=[(k,v) for k,v in selected if v.get("writeState") in eligible]
         not_prechecked = len(selected) - len(targets)
@@ -1279,34 +1279,30 @@ class Workbench(QMainWindow):
         message = (
             f"已勾选 {len(selected)} 条，其中 {len(targets)} 条已预检并可写回"
             + (f"，{not_prechecked} 条未预检将跳过" if not_prechecked else "") + "。\n"
-            "仅 ERP 当前无审核意见的单据可写回；已有意见（无论相同或冲突）均不会覆盖，须在 ERP 人工处理。\n\n"
+            "写回会把本次人工最终意见直接记录到 ERP。已有意见不会删除；若本次为改判，将新增一条人工改判记录，并以最新人工最终意见作为当前建议。\n\n"
             "本操作不支付、不删除，也不改变报销单业务状态。是否继续？"
         )
         if QMessageBox.question(self,"确认批量写回",message,QMessageBox.Yes|QMessageBox.No)!=QMessageBox.Yes:return
         def work() -> dict[str, list[str]]:
             if "expense:review" not in set(self.client.me().get("scopes", [])):
                 raise PermissionError("当前 API Key 缺少 expense:review 权限；只能只读审核，不能写回 ERP。")
-            ok=[]; skipped=[]
+            ok=[]; appended=[]
             for claim_id,item in targets:
-                # Re-read immediately before POST.  A concurrent ERP user may
-                # have added a review after the precheck; such a record must
-                # never be appended or overwritten by this client.
                 existing = self.client.request(f"/v1/expense-claims/{claim_id}/reviews").get("data", [])
-                if existing:
-                    skipped.append(claim_id)
-                    continue
-                reasons = [f"财务人工确认（{item.get('reviewer', '财务复核人')}）：{item.get('reason', '')}"] + list(item.get("aiReasons", []))
+                prefix = "财务人工改判（以本次人工最终意见为准，历史意见保留）" if existing else "财务人工确认"
+                reasons = [f"{prefix}（{item.get('reviewer', '财务复核人')}）：{item.get('reason', '')}"] + list(item.get("aiReasons", []))
                 evidence = [{"source": "local-evidence-chain", "path": item["evidenceRun"]}] if item.get("evidenceRun") else []
                 self.client.request(f"/v1/expense-claims/{claim_id}/review",method="POST",body={"result":item["decision"],"reasons":reasons,"evidence":evidence,"confidence":1.0}); ok.append(claim_id)
-            return {"written": ok, "skipped": skipped}
+                if existing: appended.append(claim_id)
+            return {"written": ok, "appended": appended}
         def done(payload: dict[str, list[str]]) -> None:
             ok = payload["written"]
-            skipped = payload["skipped"]
+            appended = payload["appended"]
             for key in ok:
                 item = self.store.data["manual"][key]
                 previous = item.get("writeState", "")
                 item["preWriteState"] = previous
-                suffix = {"意见冲突": "（原意见冲突）", "内容已一致": "（重复确认）", "结论一致": "（结论重复确认）"}.get(previous, "")
+                suffix = "（人工改判已写回）" if key in appended else ""
                 item.setdefault("writeHistory", []).append({
                     "at": datetime.now().isoformat(timespec="seconds"),
                     "decision": item.get("decision"),
@@ -1315,11 +1311,7 @@ class Workbench(QMainWindow):
                 })
                 item["writeState"]="已写回" + suffix
                 item["workflowState"]="WRITTEN"
-            for key in skipped:
-                item = self.store.data["manual"][key]
-                item["writeState"] = "意见冲突"
-                item["conflictReason"] = "写回前最终复查发现 ERP 已存在审核意见；系统未写回，请到 ERP 人工处理。"
-            self.store.save(); self.write_status.setText(f"已写回 {len(ok)} 条；写回前发现 ERP 已有意见并跳过 {len(skipped)} 条。"); self.render_writeback()
+            self.store.save(); self.write_status.setText(f"已写回 {len(ok)} 条，其中 {len(appended)} 条为人工改判/重复确认留痕；ERP 历史意见已保留。"); self.render_writeback()
         self._run(work, done)
 
     def refresh_calibration_choices(self) -> None:
