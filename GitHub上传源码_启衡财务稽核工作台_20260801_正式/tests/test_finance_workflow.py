@@ -14,7 +14,10 @@ from PySide6.QtWidgets import QApplication
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MODULE_PATH = ROOT / "m1m3-html-final" / "finance_workbench.py"
+# Test the same desktop entry point that is packaged into the formal M1–M3 EXE.
+# Keeping this path aligned with the delivery source prevents a green test run
+# against an older prototype that is not included in the submission archive.
+MODULE_PATH = ROOT / "m4-final-20260731" / "finance_workbench.py"
 SPEC = importlib.util.spec_from_file_location("finance_workbench_under_test", MODULE_PATH)
 assert SPEC and SPEC.loader
 module = importlib.util.module_from_spec(SPEC)
