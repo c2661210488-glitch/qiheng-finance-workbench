@@ -145,6 +145,20 @@ class FinanceWorkflowTests(unittest.TestCase):
         self.assertEqual(item["writeState"], "结论一致")
         self.assertIn("均为建议驳回", item["conflictReason"])
 
+    def test_human_redecision_appends_latest_erp_review(self) -> None:
+        """A corrected human decision must be written even when ERP has history."""
+        self.window._run = lambda fn, done: done(fn())
+        self.client.existing_reviews = [{"result": "APPROVE", "reasons": ["历史通过"], "createdAt": "2026-07-30"}]
+        self.window.finalize_current_claim("REJECT")
+        self.window.write_table.item(0, 0).setCheckState(module.Qt.Checked)
+        self.window.precheck()
+        self.assertEqual(self.window.store.data["manual"]["claim-1"]["writeState"], "意见冲突")
+        self.window.writeback()
+        self.assertEqual(len(self.client.posts), 1)
+        self.assertEqual(self.client.posts[0][1]["result"], "REJECT")
+        self.assertIn("财务人工改判", self.client.posts[0][1]["reasons"][0])
+        self.assertEqual(self.window.store.data["manual"]["claim-1"]["workflowState"], "WRITTEN")
+
     def test_return_from_write_queue_restores_m2_and_preserves_history(self) -> None:
         self.window.confirm_ai_decision()
         item = self.window.store.data["manual"]["claim-1"]
@@ -203,3 +217,4 @@ class FinanceWorkflowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
